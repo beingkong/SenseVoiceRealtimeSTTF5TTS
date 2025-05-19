@@ -3,6 +3,6 @@ uvicorn==0.21.1
 numpy==1.24.2
 torch==2.0.0
 scipy==1.10.1
-TTS==0.13.0
 gTTS==2.3.1
 pydub==0.25.1
+# F5 TTS implementation is provided in the app.py file

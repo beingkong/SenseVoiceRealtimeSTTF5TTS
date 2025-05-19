@@ -4,3 +4,6 @@ python-multipart==0.0.6
 numpy==1.24.2
 torch==2.0.0
 torchaudio==2.0.0
+soundfile>=0.12.1
+sensevoice-onnx>=0.1.0
+# SenseVoice implementation is provided in the app.py file, with fallback to sensevoice-onnx

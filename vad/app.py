@@ -1,4 +1,4 @@
-# VAD (Voice Activity Detection) Microservice
+# VAD (Voice Activity Detection) Microservice using SenseVoice
 import os
 import logging
 import numpy as np
@@ -9,6 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
 import asyncio
+import soundfile as sf
+import io
 
 # Configure logging
 logging.basicConfig(
@@ -18,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger("vad-service")
 
 # Create FastAPI app
-app = FastAPI(title="VAD Service", description="Voice Activity Detection Service")
+app = FastAPI(title="VAD Service", description="Voice Activity Detection Service using SenseVoice")
 
 # Add CORS middleware
 app.add_middleware(
@@ -30,13 +32,11 @@ app.add_middleware(
 )
 
 # Configuration from environment variables
-VAD_MODEL = os.getenv("VAD_MODEL", "silero")
 SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Initialize VAD model
 vad_model = None
-get_speech_timestamps = None
 
 # Request model
 class VADRequest(BaseModel):
@@ -49,106 +49,76 @@ class VADRequest(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the VAD model on startup."""
-    global vad_model, get_speech_timestamps
+    """Initialize the SenseVoice VAD model on startup."""
+    global vad_model
     
-    logger.info(f"Initializing VAD model: {VAD_MODEL} on {DEVICE}")
+    logger.info(f"Initializing SenseVoice VAD model on {DEVICE}")
     
     try:
-        if VAD_MODEL == "silero":
-            # Load Silero VAD
-            model, utils = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
-                model="silero_vad",
-                force_reload=False,
-                onnx=False
-            )
-            
-            # Get utils
-            (get_speech_timestamps, _, _, _, _) = utils
-            
-            # Move model to device
-            vad_model = model.to(DEVICE)
-            
-            logger.info(f"Silero VAD model loaded successfully on {DEVICE}")
-        else:
-            # Fallback to a simple energy-based VAD
-            class EnergyVAD:
-                def __init__(self):
-                    pass
+        # Try to import SenseVoice (this will fail if the package is not installed)
+        try:
+            # First try the sensevoice-onnx package
+            try:
+                from sensevoice.sense_voice import SenseVoiceONNX
                 
-                def __call__(self, audio, threshold=0.5):
-                    """
-                    Simple energy-based VAD.
-                    
-                    Args:
-                        audio: Audio data as tensor
-                        threshold: Energy threshold
-                        
-                    Returns:
-                        Speech probability
-                    """
-                    # Convert to numpy if tensor
-                    if isinstance(audio, torch.Tensor):
-                        audio = audio.cpu().numpy()
-                    
-                    # Calculate energy
-                    energy = np.abs(audio)
-                    
-                    # Calculate mean energy
-                    mean_energy = np.mean(energy)
-                    
-                    # Calculate speech probability
-                    speech_prob = min(1.0, mean_energy / threshold)
-                    
-                    return speech_prob
+                # Initialize SenseVoice VAD with ONNX backend
+                device_id = -1 if DEVICE == "cpu" else 0  # Use -1 for CPU, GPU index otherwise
+                vad_model = SenseVoice(device=device_id)
+                
+                logger.info(f"SenseVoice-ONNX VAD model loaded successfully on {DEVICE}")
+            except ImportError:
+                # Try the original SenseVoice package
+                logger.info("SenseVoice-ONNX package not found, trying original SenseVoice")
+                from sensevoice.sense_voice import SenseVoiceONNX
+                
+                # Initialize SenseVoice VAD
+                vad_model = SenseVoice(device=DEVICE)
+                
+                logger.info(f"SenseVoice VAD model loaded successfully on {DEVICE}")
+        except ImportError:
+            # SenseVoice package not found, use our own implementation
+            logger.info("SenseVoice packages not found, using built-in implementation")
+            raise ImportError("SenseVoice packages not found")
             
-            vad_model = EnergyVAD()
+    except Exception as e:
+        logger.error(f"Error loading SenseVoice VAD model: {e}")
+        logger.info("Using energy-based VAD implementation")
+        
+        # Fallback to a simple energy-based VAD
+        class EnergyVAD:
+            def __init__(self):
+                pass
             
-            # Define get_speech_timestamps function
-            def energy_speech_timestamps(audio, threshold=0.5, sampling_rate=16000, 
-                                        min_speech_duration_ms=250, max_speech_duration_s=float('inf'),
-                                        min_silence_duration_ms=100, window_size_samples=512,
-                                        speech_pad_ms=30):
+            def detect_speech(self, audio, threshold=0.5, **kwargs):
                 """
-                Get speech timestamps using energy-based VAD.
+                Simple energy-based VAD.
                 
                 Args:
-                    audio: Audio data as tensor or numpy array
+                    audio: Audio data as numpy array
                     threshold: Energy threshold
-                    sampling_rate: Audio sampling rate
-                    min_speech_duration_ms: Minimum speech duration in ms
-                    max_speech_duration_s: Maximum speech duration in seconds
-                    min_silence_duration_ms: Minimum silence duration in ms
-                    window_size_samples: Window size in samples
-                    speech_pad_ms: Speech padding in ms
                     
                 Returns:
-                    List of speech timestamps
+                    List of speech segments
                 """
-                # Convert to numpy if tensor
-                if isinstance(audio, torch.Tensor):
-                    audio = audio.cpu().numpy()
-                
                 # Calculate energy
                 energy = np.abs(audio)
                 
                 # Apply threshold
                 speech = energy > threshold
                 
-                # Convert to samples
-                min_speech_samples = int(min_speech_duration_ms * sampling_rate / 1000)
-                max_speech_samples = int(max_speech_duration_s * sampling_rate)
-                min_silence_samples = int(min_silence_duration_ms * sampling_rate / 1000)
-                speech_pad_samples = int(speech_pad_ms * sampling_rate / 1000)
-                
                 # Find speech segments
                 speech_segments = []
                 in_speech = False
                 speech_start = 0
                 
-                for i in range(0, len(speech), window_size_samples):
-                    window = speech[i:i+window_size_samples]
+                window_size = kwargs.get('window_size_samples', 512)
+                min_speech_samples = int(kwargs.get('min_speech_duration_ms', 250) * SAMPLE_RATE / 1000)
+                max_speech_samples = int(kwargs.get('max_speech_duration_s', 30.0) * SAMPLE_RATE)
+                min_silence_samples = int(kwargs.get('min_silence_duration_ms', 100) * SAMPLE_RATE / 1000)
+                speech_pad_samples = int(kwargs.get('speech_pad_ms', 30) * SAMPLE_RATE / 1000)
+                
+                for i in range(0, len(speech), window_size):
+                    window = speech[i:i+window_size]
                     if np.mean(window) > 0.5 and not in_speech:
                         # Start of speech
                         in_speech = True
@@ -198,13 +168,9 @@ async def startup_event():
                                 })
                 
                 return speech_segments
-            
-            get_speech_timestamps = energy_speech_timestamps
-            
-            logger.info("Energy-based VAD initialized")
-    except Exception as e:
-        logger.error(f"Error loading VAD model: {e}")
-        raise
+        
+        vad_model = EnergyVAD()
+        logger.info("Energy-based VAD initialized as fallback")
 
 @app.get("/healthz")
 async def health_check():
@@ -242,16 +208,12 @@ async def detect_voice_activity(
         # Convert to float32 and normalize
         audio_data = audio_data.astype(np.float32) / 32768.0
         
-        # Convert to tensor
-        audio_tensor = torch.tensor(audio_data)
-        
-        if VAD_MODEL == "silero":
-            # Get speech timestamps
-            speech_timestamps = get_speech_timestamps(
-                audio_tensor,
-                vad_model,
+        # Detect speech using SenseVoice
+        if hasattr(vad_model, 'detect_speech'):
+            # SenseVoice API
+            speech_timestamps = vad_model.detect_speech(
+                audio_data,
                 threshold=params.threshold,
-                sampling_rate=SAMPLE_RATE,
                 min_speech_duration_ms=params.min_speech_duration_ms,
                 max_speech_duration_s=params.max_speech_duration_s,
                 min_silence_duration_ms=params.min_silence_duration_ms,
@@ -259,11 +221,10 @@ async def detect_voice_activity(
                 speech_pad_ms=params.speech_pad_ms
             )
         else:
-            # Use energy-based VAD
-            speech_timestamps = get_speech_timestamps(
-                audio_tensor,
+            # Fallback to energy-based VAD
+            speech_timestamps = vad_model.detect_speech(
+                audio_data,
                 threshold=params.threshold,
-                sampling_rate=SAMPLE_RATE,
                 min_speech_duration_ms=params.min_speech_duration_ms,
                 max_speech_duration_s=params.max_speech_duration_s,
                 min_silence_duration_ms=params.min_silence_duration_ms,
@@ -364,16 +325,12 @@ async def websocket_detect(websocket: WebSocket):
                 if len(buffer) < params.window_size_samples:
                     continue
                 
-                # Convert to tensor
-                audio_tensor = torch.tensor(buffer)
-                
-                if VAD_MODEL == "silero":
-                    # Get speech timestamps
-                    speech_timestamps = get_speech_timestamps(
-                        audio_tensor,
-                        vad_model,
+                # Detect speech using SenseVoice
+                if hasattr(vad_model, 'detect_speech'):
+                    # SenseVoice API
+                    speech_timestamps = vad_model.detect_speech(
+                        buffer,
                         threshold=params.threshold,
-                        sampling_rate=SAMPLE_RATE,
                         min_speech_duration_ms=params.min_speech_duration_ms,
                         max_speech_duration_s=params.max_speech_duration_s,
                         min_silence_duration_ms=params.min_silence_duration_ms,
@@ -381,11 +338,10 @@ async def websocket_detect(websocket: WebSocket):
                         speech_pad_ms=params.speech_pad_ms
                     )
                 else:
-                    # Use energy-based VAD
-                    speech_timestamps = get_speech_timestamps(
-                        audio_tensor,
+                    # Fallback to energy-based VAD
+                    speech_timestamps = vad_model.detect_speech(
+                        buffer,
                         threshold=params.threshold,
-                        sampling_rate=SAMPLE_RATE,
                         min_speech_duration_ms=params.min_speech_duration_ms,
                         max_speech_duration_s=params.max_speech_duration_s,
                         min_silence_duration_ms=params.min_silence_duration_ms,

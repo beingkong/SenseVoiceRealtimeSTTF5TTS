@@ -6,10 +6,10 @@ This project implements a modular, microservices-based architecture for a real-t
 
 The system is composed of the following microservices:
 
-1. **VAD (Voice Activity Detection)** - Detects when a user is speaking
-2. **STT (Speech-to-Text)** - Transcribes audio to text
-3. **TTS (Text-to-Speech)** - Converts text to speech
-4. **LLM (Language Model)** - Generates responses based on conversation context
+1. **VAD (Voice Activity Detection using SenseVoice)** - Detects when a user is speaking
+2. **STT (Speech-to-Text using RealtimeSTT)** - Transcribes audio to text
+3. **TTS (Text-to-Speech using F5 TTS)** - Converts text to speech
+4. **LLM (Language Model using Qwen3 14b)** - Generates responses based on conversation context
 5. **Main Application** - Orchestrates the flow between services and manages the user interface
 
 ```
@@ -22,7 +22,7 @@ The system is composed of the following microservices:
      ↓        ↓         ↓         ↓
  [VAD API] [STT API] [TTS API] [LLM API]
      ↓        ↓         ↓         ↓
-CPU低配   CPU部署    CPU部署    GPU部署
+SenseVoice RealtimeSTT  F5 TTS   Qwen3 14b
 ```
 
 ## Service Endpoints
@@ -40,14 +40,14 @@ All services also provide:
 - WebSocket endpoints for streaming data
 - `/healthz` endpoint for health checks
 
-## Deployment Architecture
+## Deployment Options
 
-This system is designed for a distributed deployment across multiple servers:
+This system can be deployed in two ways:
 
-1. **CPU Server(s)**: Hosts the VAD, STT, TTS, and main application services
-2. **GPU Server**: Hosts the Ollama service for LLM inference
+1. **Docker Deployment**: Using Docker Compose for containerized deployment
+2. **Non-Docker Deployment**: Running services directly on the host machine
 
-### Deployment Steps
+### Docker Deployment
 
 #### 1. GPU Server Setup (for Ollama)
 
@@ -91,15 +91,70 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### Individual Service Deployment
+### Non-Docker Deployment
+
+For deployment without Docker, use the provided `run_services.py` script:
+
+#### Prerequisites
+
+- Python 3.8 or higher
+- Virtual environment module (`python -m venv`)
+- For GPU acceleration: CUDA and appropriate drivers
+
+#### Setup and Installation
+
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit the .env file to configure your services
+# IMPORTANT: Set OLLAMA_BASE_URL to point to your GPU server
+# Example: OLLAMA_BASE_URL=http://192.168.1.100:11434
+nano .env
+
+# Install dependencies for all services
+python run_services.py --install
+
+# List available services
+python run_services.py --list
+```
+
+#### Running Services
+
+```bash
+# Start all services
+python run_services.py --all
+
+# Start a specific service
+python run_services.py --service vad
+
+# Stop a specific service
+python run_services.py --stop vad
+
+# Stop all services
+python run_services.py --stop-all
+```
+
+The script will:
+1. Create a virtual environment if it doesn't exist
+2. Install all required dependencies
+3. Start services in the correct order
+4. Provide a web interface at http://localhost:8000
+
+## Individual Service Deployment
 
 Each service can also be deployed independently:
 
 ```bash
-# Example: Deploy only the STT service
+# Example: Deploy only the STT service with Docker
 cd stt
 docker build -t voice-chat-stt .
 docker run -p 3002:3002 -e STT_MODEL=openai/whisper-base voice-chat-stt
+
+# Example: Deploy only the STT service without Docker
+cd stt
+pip install -r requirements.txt
+python app.py
 ```
 
 ## Configuration
@@ -108,17 +163,17 @@ Each service can be configured through environment variables. See `.env.example`
 
 ### Key Configuration Options
 
-- **VAD Service**: Model selection, sensitivity parameters
-- **STT Service**: Whisper model size, language settings
-- **TTS Service**: Voice selection, audio quality settings
-- **LLM Service**: Model selection (Ollama or OpenAI), API keys
+- **VAD Service**: SenseVoice configuration, sensitivity parameters
+- **STT Service**: RealtimeSTT settings, language settings
+- **TTS Service**: F5 TTS voice selection, audio quality settings
+- **LLM Service**: Qwen3 14b model settings, API configuration
 
 ## Development
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- Python 3.10+
+- Docker and Docker Compose (for Docker deployment)
+- Python 3.8+ (for non-Docker deployment)
 - NVIDIA GPU with CUDA support (optional, for faster inference)
 
 ### Local Development
@@ -177,9 +232,10 @@ curl -X POST http://localhost:3004/generate \
 
 ## Troubleshooting
 
-- **Service not starting**: Check logs with `docker-compose logs [service_name]`
-- **GPU not detected**: Ensure NVIDIA drivers and nvidia-docker are properly installed
+- **Service not starting**: Check logs with `docker-compose logs [service_name]` or check the console output in non-Docker mode
+- **GPU not detected**: Ensure NVIDIA drivers and CUDA are properly installed
 - **High latency**: Consider using smaller models or upgrading hardware
+- **Dependency issues**: For non-Docker deployment, try reinstalling dependencies with `python run_services.py --install`
 
 ## License
 

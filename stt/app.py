@@ -1,4 +1,4 @@
-# STT (Speech-to-Text) Microservice
+# STT (Speech-to-Text) Microservice using RealtimeSTT
 import os
 import logging
 import numpy as np
@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, List
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+import io
 
 # Configure logging
 logging.basicConfig(
@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger("stt-service")
 
 # Create FastAPI app
-app = FastAPI(title="STT Service", description="Speech-to-Text Service")
+app = FastAPI(title="STT Service", description="Speech-to-Text Service using RealtimeSTT")
 
 # Add CORS middleware
 app.add_middleware(
@@ -31,58 +31,92 @@ app.add_middleware(
 )
 
 # Configuration from environment variables
-MODEL_NAME = os.getenv("STT_MODEL", "openai/whisper-base")
 SAMPLE_RATE = int(os.getenv("SAMPLE_RATE", "16000"))
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CHUNK_LENGTH_S = float(os.getenv("CHUNK_LENGTH_S", "30.0"))
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "16"))
+LANGUAGE = os.getenv("LANGUAGE", "en")
 RETURN_TIMESTAMPS = os.getenv("RETURN_TIMESTAMPS", "false").lower() == "true"
 
 # Initialize STT model
-stt_pipeline = None
+stt_model = None
 
 @app.on_event("startup")
 async def startup_event():
     """Initialize the STT model on startup."""
-    global stt_pipeline
+    global stt_model
     
-    logger.info(f"Initializing STT model: {MODEL_NAME} on {DEVICE}")
+    logger.info(f"Initializing RealtimeSTT model on {DEVICE}")
     
     try:
-        # Load model and processor
-        model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
-            low_cpu_mem_usage=True,
-            use_safetensors=True,
-        )
-        model.to(DEVICE)
-        
-        processor = AutoProcessor.from_pretrained(MODEL_NAME)
-        
-        # Create pipeline
-        stt_pipeline = pipeline(
-            "automatic-speech-recognition",
-            model=model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            max_new_tokens=128,
-            chunk_length_s=CHUNK_LENGTH_S,
-            batch_size=BATCH_SIZE,
-            return_timestamps=RETURN_TIMESTAMPS,
-            torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
-            device=DEVICE,
-        )
-        
-        logger.info(f"STT model loaded successfully on {DEVICE}")
+        # Try to import RealtimeSTT (this will fail if the package is not installed)
+        try:
+            from realtimestt import RealtimeSTT
+            
+            # Initialize RealtimeSTT
+            stt_model = RealtimeSTT(
+                device=DEVICE,
+                language=LANGUAGE,
+                return_timestamps=RETURN_TIMESTAMPS
+            )
+            
+            logger.info(f"RealtimeSTT model loaded successfully on {DEVICE}")
+        except ImportError:
+            # RealtimeSTT package not found, use our own implementation
+            logger.info("RealtimeSTT package not found, using Hugging Face Transformers")
+            raise ImportError("RealtimeSTT package not found")
+            
     except Exception as e:
-        logger.error(f"Error loading STT model: {e}")
-        raise
+        logger.error(f"Error loading RealtimeSTT model: {e}")
+        logger.info("Falling back to Hugging Face Transformers")
+        
+        # Fallback to Hugging Face Transformers
+        try:
+            from transformers import pipeline
+            
+            logger.info("Falling back to Hugging Face Transformers pipeline")
+            
+            # Initialize pipeline
+            stt_model = pipeline(
+                "automatic-speech-recognition",
+                model="openai/whisper-base",
+                device=DEVICE
+            )
+            
+            # Wrap pipeline in a class with the same interface
+            class WhisperWrapper:
+                def __init__(self, pipeline):
+                    self.pipeline = pipeline
+                
+                def transcribe(self, audio, language="en"):
+                    """
+                    Transcribe audio to text.
+                    
+                    Args:
+                        audio: Audio data as numpy array
+                        language: Language code
+                        
+                    Returns:
+                        Dictionary with transcription results
+                    """
+                    result = self.pipeline(
+                        audio,
+                        language=language
+                    )
+                    
+                    return {
+                        "text": result["text"],
+                        "language": language
+                    }
+            
+            stt_model = WhisperWrapper(stt_model)
+            logger.info("Whisper fallback initialized")
+        except Exception as e:
+            logger.error(f"Error initializing fallback STT model: {e}")
+            raise
 
 @app.get("/healthz")
 async def health_check():
     """Health check endpoint."""
-    if stt_pipeline is None:
+    if stt_model is None:
         raise HTTPException(status_code=503, detail="STT model not initialized")
     return {"status": "ok"}
 
@@ -112,22 +146,18 @@ async def transcribe(
         audio_data = audio_data.astype(np.float32) / 32768.0
         
         # Transcribe audio
-        result = stt_pipeline(
-            audio_data,
-            sampling_rate=SAMPLE_RATE,
-            generate_kwargs={"language": language} if "whisper" in MODEL_NAME.lower() else None,
-        )
+        result = stt_model.transcribe(audio_data, language=language)
         
         # Format result
         transcription = {
-            "text": result["text"],
+            "text": result.get("text", ""),
             "language": language,
             "is_final": True
         }
         
         # Add timestamps if available
-        if "chunks" in result:
-            transcription["chunks"] = result["chunks"]
+        if "timestamps" in result:
+            transcription["timestamps"] = result["timestamps"]
             
         return transcription
     except Exception as e:
@@ -206,15 +236,11 @@ async def websocket_transcribe(
                     continue
                 
                 # Transcribe audio
-                result = stt_pipeline(
-                    buffer,
-                    sampling_rate=SAMPLE_RATE,
-                    generate_kwargs={"language": language} if "whisper" in MODEL_NAME.lower() else None,
-                )
+                result = stt_model.transcribe(buffer, language=language)
                 
                 # Format result
                 transcription = {
-                    "text": result["text"],
+                    "text": result.get("text", ""),
                     "language": language,
                     "is_final": False
                 }
@@ -240,15 +266,11 @@ async def websocket_transcribe(
                 # Send final transcription
                 buffer = audio_buffer.get_buffer()
                 if len(buffer) > 0:
-                    result = stt_pipeline(
-                        buffer,
-                        sampling_rate=SAMPLE_RATE,
-                        generate_kwargs={"language": language} if "whisper" in MODEL_NAME.lower() else None,
-                    )
+                    result = stt_model.transcribe(buffer, language=language)
                     
                     # Format result
                     transcription = {
-                        "text": result["text"],
+                        "text": result.get("text", ""),
                         "language": language,
                         "is_final": True
                     }
