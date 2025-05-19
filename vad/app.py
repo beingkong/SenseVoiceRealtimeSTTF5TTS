@@ -57,24 +57,146 @@ async def startup_event():
     try:
         # Try to import SenseVoice (this will fail if the package is not installed)
         try:
-            # First try the sensevoice-onnx package
+            # Try to import the sensevoice-onnx package
             try:
-                from sensevoice.sense_voice import SenseVoiceONNX
+                # Print the Python path to debug
+                import sys
+                logger.info(f"Python path: {sys.path}")
+    
                 
                 # Initialize SenseVoice VAD with ONNX backend
                 device_id = -1 if DEVICE == "cpu" else 0  # Use -1 for CPU, GPU index otherwise
-                vad_model = SenseVoice(device=device_id)
                 
-                logger.info(f"SenseVoice-ONNX VAD model loaded successfully on {DEVICE}")
-            except ImportError:
-                # Try the original SenseVoice package
-                logger.info("SenseVoice-ONNX package not found, trying original SenseVoice")
-                from sensevoice.sense_voice import SenseVoiceONNX
-                
-                # Initialize SenseVoice VAD
-                vad_model = SenseVoice(device=DEVICE)
-                
-                logger.info(f"SenseVoice VAD model loaded successfully on {DEVICE}")
+                # Import the SenseVoice class directly from the module
+                try:
+                    from sensevoice.sense_voice import SenseVoiceInferenceSession
+                    import os
+                    
+                    # Use the exact file paths from the logs
+                    embedding_model_file = "/usr/local/lib/python3.10/dist-packages/sensevoice/resource/embedding.npy"
+                    encoder_model_file = "/usr/local/lib/python3.10/dist-packages/sensevoice/resource/sense-voice-encoder.onnx"
+                    bpe_model_file = "/usr/local/lib/python3.10/dist-packages/sensevoice/resource/chn_jpn_yue_eng_ko_spectok.bpe.model"
+                    
+                    logger.info(f"SenseVoice model files:")
+                    logger.info(f"  Embedding: {embedding_model_file}")
+                    logger.info(f"  Encoder: {encoder_model_file}")
+                    logger.info(f"  BPE: {bpe_model_file}")
+                    
+                    # Check if files exist
+                    if not os.path.exists(embedding_model_file):
+                        logger.warning(f"Embedding model file not found: {embedding_model_file}")
+                    else:
+                        logger.info(f"Embedding model file exists: {embedding_model_file}")
+                    
+                    if not os.path.exists(encoder_model_file):
+                        logger.warning(f"Encoder model file not found: {encoder_model_file}")
+                    else:
+                        logger.info(f"Encoder model file exists: {encoder_model_file}")
+                    
+                    if not os.path.exists(bpe_model_file):
+                        logger.warning(f"BPE model file not found: {bpe_model_file}")
+                        # Try to find it in the resource directory
+                        import sensevoice
+                        sensevoice_dir = os.path.dirname(sensevoice.__file__)
+                        resource_dir = os.path.join(sensevoice_dir, "resource")
+                        if os.path.exists(resource_dir):
+                            for file in os.listdir(resource_dir):
+                                if file.endswith(".model"):
+                                    bpe_model_file = os.path.join(resource_dir, file)
+                                    logger.info(f"Found potential BPE model file: {bpe_model_file}")
+                                    break
+                    else:
+                        logger.info(f"BPE model file exists: {bpe_model_file}")
+                    
+                    # Initialize with the required parameters
+                    vad_model = SenseVoiceInferenceSession(
+                        embedding_model_file=embedding_model_file,
+                        encoder_model_file=encoder_model_file,
+                        bpe_model_file=bpe_model_file
+                    )
+                    logger.info(f"SenseVoice-ONNX VAD model loaded successfully")
+                except (ImportError, AttributeError) as e:
+                    logger.warning(f"Could not import SenseVoice class: {e}")
+                    logger.info("Using sensevoice CLI as a wrapper")
+                    
+                    # Create a wrapper class that uses the CLI
+                    class SenseVoiceCLIWrapper:
+                        def __init__(self, device=-1):
+                            self.device = device
+                            logger.info(f"Initialized SenseVoice CLI wrapper with device {device}")
+                        
+                        def detect_speech(self, audio, **kwargs):
+                            """Use the sensevoice CLI to detect speech."""
+                            import tempfile
+                            import subprocess
+                            import json
+                            import numpy as np
+                            
+                            # Save audio to a temporary file
+                            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                                temp_filename = f.name
+                                import soundfile as sf
+                                sf.write(temp_filename, audio, 16000)
+                            
+                            # Run the sensevoice CLI
+                            try:
+                                cmd = ["sensevoice", "--audio", temp_filename]
+                                if self.device >= 0:
+                                    cmd.extend(["-d", str(self.device)])
+                                
+                                logger.info(f"Running command: {' '.join(cmd)}")
+                                result = subprocess.run(cmd, capture_output=True, text=True)
+                                logger.info(f"SenseVoice CLI output: {result.stdout}")
+                                
+                                # Parse the output to find speech segments
+                                # Example output: [0.61s - 5.53s] <|zh|><|NEUTRAL|><|Speech|><|woitn|>text
+                                import re
+                                segments = []
+                                
+                                # Look for time ranges like [0.61s - 5.53s]
+                                matches = re.findall(r'\[(\d+\.\d+)s - (\d+\.\d+)s\]', result.stdout)
+                                for start_str, end_str in matches:
+                                    start = float(start_str)
+                                    end = float(end_str)
+                                    
+                                    # Convert to samples
+                                    start_sample = int(start * 16000)
+                                    end_sample = int(end * 16000)
+                                    
+                                    segments.append({
+                                        "start": start_sample,
+                                        "end": end_sample
+                                    })
+                                
+                                # Clean up
+                                import os
+                                os.unlink(temp_filename)
+                                
+                                return segments
+                            except Exception as e:
+                                logger.error(f"Error running SenseVoice CLI: {e}")
+                                # Clean up
+                                import os
+                                os.unlink(temp_filename)
+                                # Return empty list
+                                return []
+                    
+                    vad_model = SenseVoiceCLIWrapper(device=device_id)
+                    logger.info("SenseVoice CLI wrapper initialized")
+            except ImportError as e:
+                # Try the original SenseVoice package as a last resort
+                logger.info(f"SenseVoice-ONNX package not found: {e}")
+                logger.info("Trying original SenseVoice")
+                try:
+                    from sensevoice import SenseVoice
+                    
+                    # Initialize SenseVoice VAD
+                    vad_model = SenseVoice(device=DEVICE)
+                    
+                    logger.info(f"SenseVoice VAD model loaded successfully on {DEVICE}")
+                except ImportError as e:
+                    logger.info(f"Original SenseVoice package not found: {e}")
+                    raise ImportError("SenseVoice packages not found")
         except ImportError:
             # SenseVoice package not found, use our own implementation
             logger.info("SenseVoice packages not found, using built-in implementation")
