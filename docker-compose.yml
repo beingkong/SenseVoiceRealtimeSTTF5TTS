@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # Main application service
+  app:
+    build:
+      context: ./app
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app
+    environment:
+      - VAD_SERVICE_URL=http://vad:3001
+      - STT_SERVICE_URL=http://stt:3002
+      - TTS_SERVICE_URL=http://tts:3003
+      - LLM_SERVICE_URL=http://llm:3004
+    depends_on:
+      - vad
+      - stt
+      - tts
+      - llm
+    networks:
+      - voice_chat_network
+
+  # Voice Activity Detection service
+  vad:
+    build:
+      context: ./vad
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./vad:/app
+    environment:
+      - VAD_MODEL=silero
+      - SAMPLE_RATE=16000
+    deploy:
+      resources:
+        reservations:
+          cpus: '0.5'
+          memory: 1G
+    networks:
+      - voice_chat_network
+
+  # Speech-to-Text service
+  stt:
+    build:
+      context: ./stt
+    ports:
+      - "3002:3002"
+    volumes:
+      - ./stt:/app
+    environment:
+      - STT_MODEL=openai/whisper-base
+      - SAMPLE_RATE=16000
+      - CHUNK_LENGTH_S=30.0
+      - BATCH_SIZE=16
+      - RETURN_TIMESTAMPS=false
+    deploy:
+      resources:
+        reservations:
+          cpus: '1'
+          memory: 2G
+        limits:
+          memory: 4G
+    networks:
+      - voice_chat_network
+
+  # Text-to-Speech service
+  tts:
+    build:
+      context: ./tts
+    ports:
+      - "3003:3003"
+    volumes:
+      - ./tts:/app
+    environment:
+      - TTS_ENGINE=coqui
+      - TTS_MODEL=tts_models/en/ljspeech/tacotron2-DDC
+      - SAMPLE_RATE=22050
+    deploy:
+      resources:
+        reservations:
+          cpus: '1'
+          memory: 2G
+        limits:
+          memory: 4G
+    networks:
+      - voice_chat_network
+
+  # Language Model service
+  llm:
+    build:
+      context: ./llm
+    ports:
+      - "3004:3004"
+    volumes:
+      - ./llm:/app
+    environment:
+      - LLM_PROVIDER=ollama
+      - LLM_MODEL=qwen3:14b
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://gpu-server-ip:11434}
+    networks:
+      - voice_chat_network
+
+networks:
+  voice_chat_network:
+    driver: bridge

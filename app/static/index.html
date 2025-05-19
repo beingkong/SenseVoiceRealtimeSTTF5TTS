@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realtime Voice Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            background-color: #f5f5f5;
+        }
+        header {
+            background-color: #2c3e50;
+            color: white;
+            padding: 1rem;
+            text-align: center;
+        }
+        main {
+            flex: 1;
+            padding: 1rem;
+            max-width: 800px;
+            margin: 0 auto;
+            width: 100%;
+        }
+        .chat-container {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            height: 70vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+        .message {
+            margin-bottom: 1rem;
+            padding: 0.5rem 1rem;
+            border-radius: 1rem;
+            max-width: 80%;
+            word-wrap: break-word;
+        }
+        .user-message {
+            background-color: #e1f5fe;
+            margin-left: auto;
+            border-bottom-right-radius: 0;
+        }
+        .assistant-message {
+            background-color: #f1f1f1;
+            margin-right: auto;
+            border-bottom-left-radius: 0;
+        }
+        .controls {
+            display: flex;
+            padding: 1rem;
+            background-color: #f9f9f9;
+            border-top: 1px solid #eee;
+        }
+        .controls button {
+            background-color: #2c3e50;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            cursor: pointer;
+            margin-right: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .controls button:hover {
+            background-color: #34495e;
+        }
+        .controls button:disabled {
+            background-color: #95a5a6;
+            cursor: not-allowed;
+        }
+        .controls input {
+            flex: 1;
+            padding: 0.5rem 1rem;
+            border: 1px solid #ddd;
+            border-radius: 25px;
+            font-size: 1rem;
+        }
+        .status {
+            text-align: center;
+            margin-top: 1rem;
+            color: #7f8c8d;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        .status-connected {
+            background-color: #2ecc71;
+        }
+        .status-disconnected {
+            background-color: #e74c3c;
+        }
+        .status-speaking {
+            background-color: #3498db;
+        }
+        footer {
+            background-color: #2c3e50;
+            color: white;
+            text-align: center;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        .hidden {
+            display: none;
+        }
+        .service-status {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 1rem;
+            font-size: 0.8rem;
+        }
+        .service {
+            display: flex;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Realtime Voice Chat</h1>
+    </header>
+    
+    <main>
+        <div class="chat-container">
+            <div class="chat-messages" id="messages">
+                <div class="message assistant-message">
+                    Hello! How can I help you today? Click the microphone button to start speaking.
+                </div>
+            </div>
+            <div class="controls">
+                <button id="micButton" title="Start/Stop Recording">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                        <line x1="12" y1="19" x2="12" y2="23"></line>
+                        <line x1="8" y1="23" x2="16" y2="23"></line>
+                    </svg>
+                </button>
+                <input type="text" id="messageInput" placeholder="Type a message..." />
+                <button id="sendButton" title="Send Message">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </div>
+        
+        <div class="status">
+            <div>
+                <span class="status-indicator status-disconnected" id="connectionStatus"></span>
+                <span id="statusText">Disconnected</span>
+            </div>
+            <div class="service-status">
+                <div class="service">
+                    <span class="status-indicator" id="vadStatus"></span>
+                    <span>VAD</span>
+                </div>
+                <div class="service">
+                    <span class="status-indicator" id="sttStatus"></span>
+                    <span>STT</span>
+                </div>
+                <div class="service">
+                    <span class="status-indicator" id="ttsStatus"></span>
+                    <span>TTS</span>
+                </div>
+                <div class="service">
+                    <span class="status-indicator" id="llmStatus"></span>
+                    <span>LLM</span>
+                </div>
+            </div>
+        </div>
+    </main>
+    
+    <footer>
+        <p>Realtime Voice Chat Microservices Demo</p>
+    </footer>
+
+    <script>
+        // DOM elements
+        const messagesContainer = document.getElementById('messages');
+        const micButton = document.getElementById('micButton');
+        const sendButton = document.getElementById('sendButton');
+        const messageInput = document.getElementById('messageInput');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const statusText = document.getElementById('statusText');
+        const vadStatus = document.getElementById('vadStatus');
+        const sttStatus = document.getElementById('sttStatus');
+        const ttsStatus = document.getElementById('ttsStatus');
+        const llmStatus = document.getElementById('llmStatus');
+
+        // Audio context
+        let audioContext;
+        let audioStream;
+        let audioProcessor;
+        let isRecording = false;
+        let audioSocket;
+        let chatSocket;
+        let clientId;
+
+        // Initialize
+        async function initialize() {
+            try {
+                // Check service status
+                const response = await fetch('/api/system-info');
+                const systemInfo = await response.json();
+                
+                // Update service status indicators
+                updateServiceStatus('vad', systemInfo.services.vad);
+                updateServiceStatus('stt', systemInfo.services.stt);
+                updateServiceStatus('tts', systemInfo.services.tts);
+                updateServiceStatus('llm', systemInfo.services.llm);
+                
+                // Connect to WebSocket
+                connectWebSocket();
+                
+                // Set up event listeners
+                micButton.addEventListener('click', toggleRecording);
+                sendButton.addEventListener('click', sendMessage);
+                messageInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') sendMessage();
+                });
+            } catch (error) {
+                console.error('Initialization error:', error);
+                statusText.textContent = 'Error initializing app';
+            }
+        }
+
+        // Update service status indicator
+        function updateServiceStatus(service, isHealthy) {
+            const element = document.getElementById(`${service}Status`);
+            if (element) {
+                element.className = `status-indicator ${isHealthy ? 'status-connected' : 'status-disconnected'}`;
+            }
+        }
+
+        // Connect to WebSocket
+        function connectWebSocket() {
+            // Audio WebSocket
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const host = window.location.host;
+            audioSocket = new WebSocket(`${protocol}//${host}/ws/audio`);
+            
+            audioSocket.onopen = () => {
+                connectionStatus.className = 'status-indicator status-connected';
+                statusText.textContent = 'Connected';
+            };
+            
+            audioSocket.onclose = () => {
+                connectionStatus.className = 'status-indicator status-disconnected';
+                statusText.textContent = 'Disconnected';
+                
+                // Try to reconnect after a delay
+                setTimeout(connectWebSocket, 3000);
+            };
+            
+            audioSocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'client_id') {
+                        clientId = data.client_id;
+                    } else if (data.type === 'transcription') {
+                        // Add user message if final
+                        if (data.is_final) {
+                            addMessage('user', data.text);
+                        }
+                    } else if (data.type === 'response') {
+                        // Add assistant message
+                        addMessage('assistant', data.text);
+                    }
+                } catch (error) {
+                    // Binary data (audio)
+                    playAudio(event.data);
+                }
+            };
+            
+            // Chat WebSocket
+            chatSocket = new WebSocket(`${protocol}//${host}/ws/chat`);
+            
+            chatSocket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === 'client_id') {
+                        clientId = data.client_id;
+                    } else if (data.type === 'response') {
+                        // Add assistant message
+                        addMessage('assistant', data.text);
+                    }
+                } catch (error) {
+                    console.error('Error parsing chat message:', error);
+                }
+            };
+        }
+
+        // Toggle recording
+        async function toggleRecording() {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                await startRecording();
+            }
+        }
+
+        // Start recording
+        async function startRecording() {
+            try {
+                // Request microphone access
+                audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+                
+                // Create source node
+                const source = audioContext.createMediaStreamSource(audioStream);
+                
+                // Create processor node
+                audioProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                // Connect nodes
+                source.connect(audioProcessor);
+                audioProcessor.connect(audioContext.destination);
+                
+                // Process audio
+                audioProcessor.onaudioprocess = (e) => {
+                    if (isRecording && audioSocket && audioSocket.readyState === WebSocket.OPEN) {
+                        // Get audio data
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        
+                        // Convert to 16-bit PCM
+                        const pcmData = new Int16Array(inputData.length);
+                        for (let i = 0; i < inputData.length; i++) {
+                            pcmData[i] = Math.max(-1, Math.min(1, inputData[i])) * 0x7FFF;
+                        }
+                        
+                        // Send to server
+                        audioSocket.send(pcmData.buffer);
+                    }
+                };
+                
+                // Update UI
+                isRecording = true;
+                micButton.style.backgroundColor = '#e74c3c';
+                statusText.textContent = 'Recording...';
+                connectionStatus.className = 'status-indicator status-speaking';
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                statusText.textContent = 'Error accessing microphone';
+            }
+        }
+
+        // Stop recording
+        function stopRecording() {
+            if (audioProcessor) {
+                audioProcessor.disconnect();
+                audioProcessor = null;
+            }
+            
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            
+            // Update UI
+            isRecording = false;
+            micButton.style.backgroundColor = '';
+            statusText.textContent = 'Connected';
+            connectionStatus.className = 'status-indicator status-connected';
+        }
+
+        // Send text message
+        function sendMessage() {
+            const message = messageInput.value.trim();
+            if (message && chatSocket && chatSocket.readyState === WebSocket.OPEN) {
+                // Add message to UI
+                addMessage('user', message);
+                
+                // Send to server
+                chatSocket.send(JSON.stringify({
+                    message: message
+                }));
+                
+                // Clear input
+                messageInput.value = '';
+            }
+        }
+
+        // Add message to UI
+        function addMessage(role, text) {
+            const messageElement = document.createElement('div');
+            messageElement.className = `message ${role}-message`;
+            messageElement.textContent = text;
+            
+            messagesContainer.appendChild(messageElement);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        // Play audio
+        async function playAudio(audioData) {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Convert audio data to ArrayBuffer
+            const arrayBuffer = audioData instanceof ArrayBuffer ? audioData : await audioData.arrayBuffer();
+            
+            // Decode audio
+            audioContext.decodeAudioData(arrayBuffer, (buffer) => {
+                // Create source node
+                const source = audioContext.createBufferSource();
+                source.buffer = buffer;
+                
+                // Connect to destination
+                source.connect(audioContext.destination);
+                
+                // Play audio
+                source.start(0);
+            }, (error) => {
+                console.error('Error decoding audio:', error);
+            });
+        }
+
+        // Initialize on page load
+        window.addEventListener('load', initialize);
+    </script>
+</body>
+</html>
